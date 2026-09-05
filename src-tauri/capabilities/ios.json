@@ -1,0 +1,41 @@
+{
+	"identifier": "ios",
+	"description": "iPad/iOS: Files-App und Dev-Server",
+	"platforms": ["iOS"],
+	"windows": ["main"],
+	"remote": {
+		"urls": ["http://*:*", "http://*"]
+	},
+	"permissions": [
+		"core:default",
+		"dialog:default",
+		"opener:default",
+		"scoped-storage:default",
+		"handwriting:default",
+		"fs:default",
+		"fs:allow-read",
+		"fs:allow-write",
+		"fs:allow-exists",
+		"fs:allow-mkdir",
+		"fs:allow-remove",
+		"fs:allow-rename",
+		"fs:allow-stat",
+		"fs:allow-read-dir",
+		"fs:allow-copy-file",
+		"fs:allow-appconfig-read",
+		"fs:allow-appconfig-write",
+		"fs:allow-appconfig-meta",
+		"fs:allow-temp-read-recursive",
+		"fs:allow-temp-write-recursive",
+		"fs:allow-temp-meta-recursive",
+		{
+			"identifier": "fs:scope",
+			"allow": [
+				{ "path": "$APPCONFIG/**" },
+				{ "path": "$TEMP/**" },
+				{ "path": "$DOCUMENT/**" }
+			]
+		},
+		"allow-recognize-handwriting"
+	]
+}

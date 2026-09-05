@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-recognize-handwriting"
+description = "Allow on-device handwriting recognition"
+commands.allow = ["recognize_handwriting"]

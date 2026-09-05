@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-attach-ink-overlay"
+description = "Enables the attach_ink_overlay command without any pre-configured scope."
+commands.allow = ["attach_ink_overlay"]
+
+[[permission]]
+identifier = "deny-attach-ink-overlay"
+description = "Denies the attach_ink_overlay command without any pre-configured scope."
+commands.deny = ["attach_ink_overlay"]

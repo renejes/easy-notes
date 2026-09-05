@@ -102,7 +102,6 @@ if [[ ${#apps[@]} -eq 0 ]]; then
 fi
 APP="${apps[0]}"
 
-xcrun devicectl device uninstall app --device "$DEVICE_UDID" com.renejesser.easynotes >/dev/null 2>&1 || true
 xcrun devicectl device install app --device "$DEVICE_UDID" "$APP"
 xcrun devicectl device process launch --device "$DEVICE_UDID" com.renejesser.easynotes
 echo "Easy Notes is running on ${DEVICE_NAME}."

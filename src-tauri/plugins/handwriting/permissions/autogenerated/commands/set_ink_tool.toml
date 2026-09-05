@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-set-ink-tool"
+description = "Enables the set_ink_tool command without any pre-configured scope."
+commands.allow = ["set_ink_tool"]
+
+[[permission]]
+identifier = "deny-set-ink-tool"
+description = "Denies the set_ink_tool command without any pre-configured scope."
+commands.deny = ["set_ink_tool"]

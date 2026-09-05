@@ -1,8 +1,8 @@
 import Foundation
-import PencilKit
 import Tauri
 import UIKit
 import Vision
+import WebKit
 
 struct RecognizeArgs: Decodable {
     let pngPath: String
@@ -23,32 +23,88 @@ struct RecognizeReply: Encodable {
 
 enum HandwritingError: LocalizedError {
     case missingImage
-    case visionFailed
+    case missingWebView
 
     var errorDescription: String? {
         switch self {
         case .missingImage:
             return "PNG für die Erkennung fehlt."
-        case .visionFailed:
-            return "Handschrift konnte nicht erkannt werden."
+        case .missingWebView:
+            return "WKWebView für PencilKit fehlt."
         }
     }
 }
 
 final class HandwritingPlugin: Plugin {
+    private weak var webView: WKWebView?
+    private let overlay = InkOverlayController()
+
+    @objc override public func load(webview: WKWebView) {
+        webView = webview
+    }
+
+    @objc public func inkOverlaySupported(_ invoke: Invoke) {
+        invoke.resolve()
+    }
+
+    @objc public func attachInkOverlay(_ invoke: Invoke) {
+        do {
+            let args = try invoke.parseArgs(AttachOverlayArgs.self)
+            runOnMain {
+                guard let webView = self.webView ?? self.findWebView() else {
+                    invoke.reject(HandwritingError.missingWebView.localizedDescription)
+                    return
+                }
+                self.overlay.onEmit = { [weak self] payload in
+                    self?.emitStroke(payload, on: webView)
+                }
+                self.overlay.attach(webView: webView, args: args)
+                if self.overlay.isReady {
+                    invoke.resolve()
+                } else {
+                    invoke.reject(HandwritingError.missingWebView.localizedDescription)
+                }
+            }
+        } catch {
+            invoke.reject(error.localizedDescription)
+        }
+    }
+
+    @objc public func updateInkOverlay(_ invoke: Invoke) {
+        do {
+            let args = try invoke.parseArgs(OverlayFrameArgs.self)
+            runOnMain {
+                self.overlay.updateFrame(args)
+                invoke.resolve()
+            }
+        } catch {
+            invoke.reject(error.localizedDescription)
+        }
+    }
+
+    @objc public func setInkTool(_ invoke: Invoke) {
+        do {
+            let args = try invoke.parseArgs(SetInkToolArgs.self)
+            runOnMain {
+                self.overlay.setTool(args)
+                invoke.resolve()
+            }
+        } catch {
+            invoke.reject(error.localizedDescription)
+        }
+    }
+
+    @objc public func detachInkOverlay(_ invoke: Invoke) {
+        runOnMain {
+            self.overlay.detach()
+            invoke.resolve()
+        }
+    }
+
     @objc public func recognizeHandwriting(_ invoke: Invoke) {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let args = try invoke.parseArgs(RecognizeArgs.self)
-                if #available(iOS 27.0, *),
-                   let text = Self.recognizePencilKit(strokes: args.strokes)
-                {
-                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty {
-                        invoke.resolve(RecognizeReply(text: trimmed, engine: "pencilkit"))
-                        return
-                    }
-                }
                 let text = try Self.recognizeVision(pngPath: args.pngPath)
                 invoke.resolve(RecognizeReply(text: text, engine: "vision"))
             } catch {
@@ -57,49 +113,64 @@ final class HandwritingPlugin: Plugin {
         }
     }
 
-    @available(iOS 27.0, *)
-    private static func recognizePencilKit(strokes: [StrokeWire]) -> String? {
-        var pkStrokes: [PKStroke] = []
-        for stroke in strokes {
-            var points: [PKStrokePoint] = []
-            var time: TimeInterval = 0
-            let width = CGFloat(stroke.width ?? 2.2)
-            for raw in stroke.points where raw.count >= 2 {
-                let force = raw.count >= 3 ? CGFloat(raw[2]) : 0.5
-                points.append(
-                    PKStrokePoint(
-                        location: CGPoint(x: raw[0], y: raw[1]),
-                        timeOffset: time,
-                        size: CGSize(width: width, height: width),
-                        opacity: 1,
-                        force: force,
-                        azimuth: 0,
-                        altitude: .pi / 2
-                    )
-                )
-                time += 0.016
-            }
-            guard points.count >= 2 else {
-                continue
-            }
-            let path = PKStrokePath(controlPoints: points, creationDate: Date())
-            let inkKind: PKInk.Kind = stroke.kind == "marker" ? .marker : .pen
-            pkStrokes.append(PKStroke(ink: PKInk(inkKind, color: .black), path: path))
+    private func runOnMain(_ body: @escaping () -> Void) {
+        if Thread.isMainThread {
+            body()
+        } else {
+            DispatchQueue.main.async(execute: body)
         }
-        guard !pkStrokes.isEmpty else {
+    }
+
+    private func emitStroke(_ payload: InkStrokeDTO, on webView: WKWebView) {
+        var body: [String: Any] = [
+            "color": payload.color,
+            "width": payload.width,
+            "points": payload.points
+        ]
+        if let kind = payload.kind {
+            body["kind"] = kind
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: body),
+            let json = String(data: data, encoding: .utf8)
+        else {
+            return
+        }
+        let script = """
+        (function(payload){
+          window.__easyNotesInkQueue = window.__easyNotesInkQueue || [];
+          if (typeof window.__easyNotesOnInkStroke === 'function') {
+            window.__easyNotesOnInkStroke(payload);
+          } else {
+            window.__easyNotesInkQueue.push(payload);
+          }
+        })(\(json));
+        """
+        webView.evaluateJavaScript(script, completionHandler: nil)
+    }
+
+    private func findWebView() -> WKWebView? {
+        func search(_ view: UIView) -> WKWebView? {
+            if let webView = view as? WKWebView {
+                return webView
+            }
+            for child in view.subviews {
+                if let found = search(child) {
+                    return found
+                }
+            }
             return nil
         }
-        let drawing = PKDrawing(strokes: pkStrokes)
-        let recognizer = PKStrokeRecognizer()
-        var recognized: String?
-        let lock = DispatchSemaphore(value: 0)
-        Task { @MainActor in
-            await recognizer.updateDrawing(drawing)
-            recognized = await recognizer.recognizedText()
-            lock.signal()
+        for scene in UIApplication.shared.connectedScenes {
+            guard let windowScene = scene as? UIWindowScene else {
+                continue
+            }
+            for window in windowScene.windows {
+                if let found = search(window) {
+                    return found
+                }
+            }
         }
-        _ = lock.wait(timeout: .now() + 20)
-        return recognized
+        return nil
     }
 
     private static func recognizeVision(pngPath: String) throws -> String {

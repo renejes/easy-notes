@@ -1,4 +1,31 @@
-import type { InkPoint, Stroke } from '$lib/ink/types';
+import { PAGE_LINE_GAP, PAGE_LINE_TOP, type InkPoint, type Stroke } from '$lib/ink/types';
+
+export function drawPaper(
+	ctx: CanvasRenderingContext2D,
+	width: number,
+	height: number,
+	scale: number,
+	lined: boolean
+): void {
+	ctx.fillStyle = '#ffffff';
+	ctx.fillRect(0, 0, width, height);
+	if (!lined) {
+		return;
+	}
+	ctx.save();
+	ctx.strokeStyle = '#d4d4d4';
+	ctx.lineWidth = 1;
+	ctx.beginPath();
+	const gap = PAGE_LINE_GAP * scale;
+	const top = PAGE_LINE_TOP * scale;
+	for (let y = top; y < height; y += gap) {
+		const row = Math.round(y) + 0.5;
+		ctx.moveTo(0, row);
+		ctx.lineTo(width, row);
+	}
+	ctx.stroke();
+	ctx.restore();
+}
 
 export function drawStrokes(ctx: CanvasRenderingContext2D, strokes: Stroke[], scale: number): void {
 	ctx.lineJoin = 'round';
@@ -37,7 +64,7 @@ export function drawStrokes(ctx: CanvasRenderingContext2D, strokes: Stroke[], sc
 				ctx.lineWidth =
 					stroke.kind === 'marker'
 						? stroke.width * scale
-						: Math.max(1, stroke.width * (0.4 + point.p) * scale);
+						: Math.max(0.6, stroke.width * scale);
 				ctx.lineTo(point.x * scale, point.y * scale);
 			}
 		}

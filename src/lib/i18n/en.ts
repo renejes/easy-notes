@@ -51,5 +51,6 @@ export const en: Record<MessageKey, string> = {
 	recognizeFailed: 'Could not recognize handwriting.',
 	savedMarkdown: 'Text saved.',
 	copied: 'Copied.',
-	entryCount: 'entries'
+	entryCount: 'entries',
+	paperLines: 'Lines'
 };

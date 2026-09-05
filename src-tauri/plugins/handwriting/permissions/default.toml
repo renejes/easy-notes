@@ -1,3 +1,10 @@
 [default]
-description = "On-device handwriting recognition on iOS"
-permissions = ["allow-recognize-handwriting"]
+description = "On-device handwriting recognition and PencilKit input on iOS"
+permissions = [
+	"allow-recognize-handwriting",
+	"allow-ink-overlay-supported",
+	"allow-attach-ink-overlay",
+	"allow-update-ink-overlay",
+	"allow-set-ink-tool",
+	"allow-detach-ink-overlay"
+]

@@ -49,7 +49,8 @@ export const de = {
 	recognizeFailed: 'Handschrift konnte nicht erkannt werden.',
 	savedMarkdown: 'Text gespeichert.',
 	copied: 'Kopiert.',
-	entryCount: 'Einträge'
+	entryCount: 'Einträge',
+	paperLines: 'Linien'
 } as const;
 
 export type MessageKey = keyof typeof de;

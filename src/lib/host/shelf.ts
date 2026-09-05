@@ -75,7 +75,7 @@ async function uniqueChild(parent: string, desired: string, except?: string): Pr
 	}
 }
 
-async function hydrateScopedDisplay(root: string): Promise<string | null> {
+async function hydrateScopedDisplay(root: string, fallbackName?: string | null): Promise<string | null> {
 	const parsed = parseScopedPath(root);
 	if (!parsed) {
 		return fileNameOf(root);
@@ -84,11 +84,15 @@ async function hydrateScopedDisplay(root: string): Promise<string | null> {
 		const folders = await listFolders();
 		const match = folders.find((folder) => folder.id === parsed.id);
 		if (match) {
-			toScopedRoot(match.id, match.name ?? undefined, match.uri ?? undefined);
-			return match.name ?? scopedDisplayName(parsed.id);
+			toScopedRoot(match.id, match.name ?? fallbackName ?? undefined, match.uri ?? undefined);
+			return match.name ?? fallbackName ?? scopedDisplayName(parsed.id);
 		}
 	} catch {
 		// Bookmark still usable even if the name list fails.
+	}
+	if (fallbackName && fallbackName.length > 0) {
+		toScopedRoot(parsed.id, fallbackName);
+		return fallbackName;
 	}
 	return scopedDisplayName(parsed.id);
 }
@@ -99,7 +103,7 @@ export async function chooseShelfFolder(): Promise<void> {
 		return;
 	}
 	await holdScopedFolder(path);
-	const name = (await hydrateScopedDisplay(path)) ?? t('untitled');
+	const name = (await hydrateScopedDisplay(path, null)) ?? t('untitled');
 	appState.setShelf(path, name);
 	await persistAppSettings();
 	await refreshShelf();
@@ -113,16 +117,16 @@ export async function loadShelf(): Promise<void> {
 	try {
 		await holdScopedFolder(root);
 		if (isScopedPath(root)) {
-			const name = await hydrateScopedDisplay(root);
+			const name = await hydrateScopedDisplay(root, appState.shelfName);
 			if (name) {
 				appState.setShelf(root, name);
 			}
 		}
 		await refreshShelf();
+		await persistAppSettings();
 	} catch (error) {
 		appState.setError(formatHostError(error, t('folderMissing')));
-		appState.setShelf(null, null);
-		await persistAppSettings();
+		appState.setNotebooks([]);
 	}
 }
 
@@ -131,7 +135,11 @@ async function readManifestAt(notebookPath: string) {
 	if (!(await pathExists(path))) {
 		return null;
 	}
-	return parseNotebookYaml(await readText(path));
+	try {
+		return parseNotebookYaml(await readText(path));
+	} catch {
+		return null;
+	}
 }
 
 export async function refreshShelf(): Promise<void> {
@@ -143,15 +151,19 @@ export async function refreshShelf(): Promise<void> {
 			continue;
 		}
 		const folder = await joinPath(root, entry.name);
-		const manifest = await readManifestAt(folder);
-		if (!manifest) {
+		try {
+			const manifest = await readManifestAt(folder);
+			if (!manifest) {
+				continue;
+			}
+			notebooks.push({
+				id: entry.name,
+				title: manifest.title,
+				entryCount: manifest.entries.length
+			});
+		} catch {
 			continue;
 		}
-		notebooks.push({
-			id: entry.name,
-			title: manifest.title,
-			entryCount: manifest.entries.length
-		});
 	}
 	notebooks.sort((a, b) => a.title.localeCompare(b.title, appState.locale));
 	appState.setNotebooks(notebooks);
@@ -281,7 +293,7 @@ export async function createEntry(title: string): Promise<string> {
 		entries: manifest.entries,
 		entryTitles: { ...open.entryTitles, [fileName]: entry.title }
 	});
-	await refreshShelf();
+	void refreshShelf();
 	return fileName;
 }
 

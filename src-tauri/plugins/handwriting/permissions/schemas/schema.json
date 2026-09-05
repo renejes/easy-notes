@@ -295,6 +295,42 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the attach_ink_overlay command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-attach-ink-overlay",
+          "markdownDescription": "Enables the attach_ink_overlay command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the attach_ink_overlay command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-attach-ink-overlay",
+          "markdownDescription": "Denies the attach_ink_overlay command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the detach_ink_overlay command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-detach-ink-overlay",
+          "markdownDescription": "Enables the detach_ink_overlay command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the detach_ink_overlay command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-detach-ink-overlay",
+          "markdownDescription": "Denies the detach_ink_overlay command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ink_overlay_supported command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ink-overlay-supported",
+          "markdownDescription": "Enables the ink_overlay_supported command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ink_overlay_supported command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ink-overlay-supported",
+          "markdownDescription": "Denies the ink_overlay_supported command without any pre-configured scope."
+        },
+        {
           "description": "Enables the recognize_handwriting command without any pre-configured scope.",
           "type": "string",
           "const": "allow-recognize-handwriting",
@@ -307,10 +343,34 @@
           "markdownDescription": "Denies the recognize_handwriting command without any pre-configured scope."
         },
         {
-          "description": "On-device handwriting recognition on iOS\n#### This default permission set includes:\n\n- `allow-recognize-handwriting`",
+          "description": "Enables the set_ink_tool command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-ink-tool",
+          "markdownDescription": "Enables the set_ink_tool command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_ink_tool command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-ink-tool",
+          "markdownDescription": "Denies the set_ink_tool command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the update_ink_overlay command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-update-ink-overlay",
+          "markdownDescription": "Enables the update_ink_overlay command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the update_ink_overlay command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-update-ink-overlay",
+          "markdownDescription": "Denies the update_ink_overlay command without any pre-configured scope."
+        },
+        {
+          "description": "On-device handwriting recognition and PencilKit input on iOS\n#### This default permission set includes:\n\n- `allow-recognize-handwriting`\n- `allow-ink-overlay-supported`\n- `allow-attach-ink-overlay`\n- `allow-update-ink-overlay`\n- `allow-set-ink-tool`\n- `allow-detach-ink-overlay`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "On-device handwriting recognition on iOS\n#### This default permission set includes:\n\n- `allow-recognize-handwriting`"
+          "markdownDescription": "On-device handwriting recognition and PencilKit input on iOS\n#### This default permission set includes:\n\n- `allow-recognize-handwriting`\n- `allow-ink-overlay-supported`\n- `allow-attach-ink-overlay`\n- `allow-update-ink-overlay`\n- `allow-set-ink-tool`\n- `allow-detach-ink-overlay`"
         }
       ]
     }

@@ -2,6 +2,7 @@
 	import { appState } from '$lib/appState.svelte';
 	import { chooseShelfFolder, createNotebook, deleteNotebook, openNotebook, refreshShelf, renameNotebook } from '$lib/host/shelf';
 	import { formatHostError } from '$lib/host/error';
+	import { setPaperLines } from '$lib/host/settings';
 	import { setLocale, t } from '$lib/i18n';
 	import { appDialog } from '$lib/ui/dialog.svelte';
 
@@ -174,6 +175,14 @@
 				<option value="en">{t('english')}</option>
 			</select>
 		</label>
+		<label>
+			<input
+				type="checkbox"
+				checked={appState.paperLines}
+				onchange={(event) => setPaperLines(event.currentTarget.checked)}
+			/>
+			{t('paperLines')}
+		</label>
 	</footer>
 </main>
 
@@ -287,9 +296,19 @@
 
 	footer {
 		margin-top: auto;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1rem 1.5rem;
+		align-items: center;
 	}
 
 	select {
 		margin-left: 0.5rem;
+	}
+
+	footer label:last-child {
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
 	}
 </style>

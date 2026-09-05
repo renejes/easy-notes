@@ -14,17 +14,19 @@ export type Stroke = {
 };
 
 export const PENCIL_COLOR = '#111111';
-export const PENCIL_WIDTH = 2.2;
+export const PENCIL_WIDTH = 1.4;
 export const MARKER_WIDTH = 16;
 export const ERASER_RADIUS = 14;
 export const PAGE_WIDTH = 768;
 export const PAGE_MIN_HEIGHT = 1024;
 export const PAGE_GROW_PAD = 240;
+export const PAGE_LINE_GAP = 32;
+export const PAGE_LINE_TOP = 40;
 
 export const MARKER_COLORS = ['#FFE135', '#FF4DA6', '#FF6A00'] as const;
 
-/** Page units. Keeps handwriting smooth, drops Apple-Pencil sample spam. */
-export const INK_MIN_POINT_DIST = 2;
+/** Page units. Drops duplicate samples without reshaping the stroke. */
+export const INK_MIN_POINT_DIST = 0.5;
 
 const DEFAULT_PRESSURE = 0.5;
 

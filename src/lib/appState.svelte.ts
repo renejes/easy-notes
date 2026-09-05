@@ -42,6 +42,7 @@ class AppState {
 	openEntry = $state<OpenEntry | null>(null);
 	lastError = $state<string | null>(null);
 	busy = $state(false);
+	paperLines = $state(false);
 
 	setLocale(locale: Locale): void {
 		this.locale = locale;

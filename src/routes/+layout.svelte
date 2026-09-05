@@ -7,7 +7,7 @@
 	import AppDialog from '$lib/components/AppDialog.svelte';
 	import { appState } from '$lib/appState.svelte';
 	import { loadShelf } from '$lib/host/shelf';
-	import { loadAppSettings, persistAppSettings } from '$lib/host/settings';
+	import { loadAppSettings } from '$lib/host/settings';
 	import { t } from '$lib/i18n';
 	import { onMount, type Snippet } from 'svelte';
 
@@ -32,8 +32,7 @@
 			if (settings) {
 				appState.setLocale(settings.locale);
 				appState.setShelf(settings.shelfRoot, settings.shelfName);
-			} else {
-				await persistAppSettings();
+				appState.paperLines = settings.paperLines;
 			}
 			document.documentElement.lang = appState.locale === 'de' ? 'de' : 'en';
 			await loadShelf();

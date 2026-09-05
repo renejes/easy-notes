@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-ink-overlay-supported"
+description = "Enables the ink_overlay_supported command without any pre-configured scope."
+commands.allow = ["ink_overlay_supported"]
+
+[[permission]]
+identifier = "deny-ink-overlay-supported"
+description = "Denies the ink_overlay_supported command without any pre-configured scope."
+commands.deny = ["ink_overlay_supported"]

@@ -162,14 +162,15 @@ export async function updateInkOverlay(frame: InkOverlayFrame): Promise<void> {
 	await call('update_ink_overlay', frame);
 }
 
-export async function setInkTool(tool: InkOverlayTool): Promise<void> {
+export async function setInkTool(tool: InkOverlayTool, trim?: 'pop' | 'clear'): Promise<void> {
 	if (!attached) {
 		return;
 	}
 	await call('set_ink_tool', {
 		kind: tool.kind,
 		color: tool.color,
-		width: tool.width
+		width: tool.width,
+		...(trim ? { trim } : {})
 	});
 }
 

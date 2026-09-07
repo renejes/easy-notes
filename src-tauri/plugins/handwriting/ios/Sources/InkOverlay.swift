@@ -34,6 +34,7 @@ struct SetInkToolArgs: Decodable {
     let kind: String
     let color: String?
     let width: Double?
+    let trim: String?
 }
 
 struct InkStrokeDTO: Encodable {
@@ -54,6 +55,7 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
 
     private var awaitingFlush = false
     private var flushing = false
+    private var emittedCount = 0
 
     var onEmit: ((InkStrokeDTO) -> Void)?
 
@@ -84,7 +86,15 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
     }
 
     func setTool(_ args: SetInkToolArgs) {
+        if args.trim == "pop" {
+            removeLastStroke()
+        } else if args.trim == "clear" {
+            clearDrawing()
+        }
         applyTool(kind: args.kind, color: args.color, width: args.width)
+        if toolKind == "off" {
+            clearDrawing()
+        }
         syncDrawingEnabled()
     }
 
@@ -98,6 +108,7 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
         toolKind = "off"
         awaitingFlush = false
         flushing = false
+        emittedCount = 0
     }
 
     private func ensureCanvas(in webView: WKWebView) {
@@ -189,8 +200,7 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
         case "marker":
             canvas.tool = PKInkingTool(.marker, color: color, width: max(2, toolWidth * ratio))
         case "pencil":
-            // PencilKit's pencil brush reads thicker than the canvas polyline.
-            canvas.tool = PKInkingTool(.pen, color: color, width: max(0.5, toolWidth * 0.45 * ratio))
+            canvas.tool = PKInkingTool(.pen, color: color, width: max(0.5, toolWidth * ratio))
         default:
             break
         }
@@ -209,7 +219,11 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
         }
         let viewWidth = max(1, canvas.bounds.width)
         let scale = pageWidth / viewWidth
-        for stroke in drawing.strokes {
+        let strokes = drawing.strokes
+        guard strokes.count > emittedCount else {
+            return
+        }
+        for stroke in strokes[emittedCount...] {
             var points = samplePoints(from: stroke, scale: scale)
             if points.count == 1 {
                 points.append(points[0])
@@ -221,11 +235,12 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
                 InkStrokeDTO(
                     kind: toolKind == "marker" ? "marker" : nil,
                     color: toolColor,
-                    width: Double(toolWidth),
+                    width: emittedWidth(from: stroke, scale: scale),
                     points: points
                 )
             )
         }
+        emittedCount = strokes.count
     }
 
     private func samplePoints(from stroke: PKStroke, scale: CGFloat) -> [[Double]] {
@@ -244,6 +259,44 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
         ]
     }
 
+    private func emittedWidth(from stroke: PKStroke, scale: CGFloat) -> Double {
+        var total: CGFloat = 0
+        var count = 0
+        for point in stroke.path {
+            let size = max(point.size.width, point.size.height)
+            if size > 0 {
+                total += size
+                count += 1
+            }
+        }
+        if count > 0 {
+            return Double((total / CGFloat(count)) * scale)
+        }
+        return Double(toolWidth)
+    }
+
+    private func removeLastStroke() {
+        guard let canvas, !canvas.drawing.strokes.isEmpty else {
+            return
+        }
+        var strokes = canvas.drawing.strokes
+        strokes.removeLast()
+        flushing = true
+        canvas.drawing = PKDrawing(strokes: strokes)
+        flushing = false
+        emittedCount = canvas.drawing.strokes.count
+    }
+
+    private func clearDrawing() {
+        guard let canvas else {
+            return
+        }
+        flushing = true
+        canvas.drawing = PKDrawing()
+        flushing = false
+        emittedCount = 0
+    }
+
     private func flushCompletedStrokes(from canvasView: PKCanvasView) {
         guard awaitingFlush, !flushing, !canvasView.drawing.strokes.isEmpty else {
             return
@@ -251,7 +304,6 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
         awaitingFlush = false
         flushing = true
         emitStrokes(from: canvasView.drawing)
-        canvasView.drawing = PKDrawing()
         flushing = false
     }
 

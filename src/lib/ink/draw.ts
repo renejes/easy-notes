@@ -59,12 +59,9 @@ export function drawStrokes(ctx: CanvasRenderingContext2D, strokes: Stroke[], sc
 			ctx.lineWidth = stroke.width * scale;
 			ctx.lineTo(first.x * scale + 0.1, first.y * scale);
 		} else {
+			ctx.lineWidth = stroke.width * scale;
 			for (let index = 1; index < stroke.points.length; index += 1) {
 				const point = stroke.points[index];
-				ctx.lineWidth =
-					stroke.kind === 'marker'
-						? stroke.width * scale
-						: Math.max(0.6, stroke.width * scale);
 				ctx.lineTo(point.x * scale, point.y * scale);
 			}
 		}

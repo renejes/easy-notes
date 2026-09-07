@@ -73,6 +73,7 @@
 	let extraHeight = $state(0);
 	let overlayLive = $state(false);
 	let pencilSeen = $state(false);
+	let nativePending = $state(0);
 
 	const drawing = $derived(
 		deskTool === 'pencil' || deskTool === 'marker' || deskTool === 'eraser'
@@ -154,7 +155,9 @@
 			return;
 		}
 		ctx.clearRect(0, 0, inkCanvas.width, inkCanvas.height);
-		drawStrokes(ctx, strokes, scale);
+		const skip = overlayLive && !overlayPaused ? nativePending : 0;
+		const shown = skip > 0 ? strokes.slice(0, Math.max(0, strokes.length - skip)) : strokes;
+		drawStrokes(ctx, shown, scale);
 	}
 
 	function layoutPage(): void {
@@ -253,7 +256,9 @@
 	$effect(() => {
 		if (!wantsNativeInk || loading || !inkCanvas || !pageEl) {
 			untrack(() => {
+				nativePending = 0;
 				overlayLive = false;
+				layoutPage();
 			});
 			void detachInkOverlay();
 			return;
@@ -276,6 +281,7 @@
 					return;
 				}
 				untrack(() => {
+					nativePending = 0;
 					overlayLive = true;
 				});
 			})
@@ -289,7 +295,9 @@
 		return () => {
 			cancelled = true;
 			untrack(() => {
+				nativePending = 0;
 				overlayLive = false;
+				layoutPage();
 			});
 			void detachInkOverlay();
 		};
@@ -366,13 +374,13 @@
 		if (!entry) {
 			return;
 		}
+		nativePending += 1;
 		const last = stroke.points[stroke.points.length - 1];
 		if (last) {
 			growIfNeeded(last);
 		}
 		entry = { ...entry, strokes: [...entry.strokes, stroke] };
 		scheduleSave();
-		layoutPage();
 	}
 
 	function selectMarker(color: (typeof MARKER_COLORS)[number]): void {
@@ -512,13 +520,23 @@
 		if (!canEditInk) {
 			return;
 		}
+		if (overlayLive && nativePending > 0) {
+			nativePending -= 1;
+			void setInkTool(overlayTool(), 'pop');
+		}
 		setStrokes(strokes.slice(0, -1));
+	}
+
+	function commitLiveInk(): void {
+		nativePending = 0;
+		layoutPage();
 	}
 
 	async function pauseOverlayForDialog(): Promise<void> {
 		if (!overlayLive) {
 			return;
 		}
+		commitLiveInk();
 		await setInkTool({ kind: 'off', color: markerColor, width: PENCIL_WIDTH });
 	}
 

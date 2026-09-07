@@ -55,8 +55,12 @@ final class HandwritingPlugin: Plugin {
                     invoke.reject(HandwritingError.missingWebView.localizedDescription)
                     return
                 }
-                self.overlay.onEmit = { [weak self] payload in
-                    self?.emitStroke(payload, on: webView)
+                self.overlay.onEmit = { [weak self] payload, done in
+                    guard let self else {
+                        done()
+                        return
+                    }
+                    self.emitStroke(payload, on: webView, done: done)
                 }
                 self.overlay.attach(webView: webView, args: args)
                 if self.overlay.isReady {
@@ -86,8 +90,9 @@ final class HandwritingPlugin: Plugin {
         do {
             let args = try invoke.parseArgs(SetInkToolArgs.self)
             runOnMain {
-                self.overlay.setTool(args)
-                invoke.resolve()
+                self.overlay.setTool(args) {
+                    invoke.resolve()
+                }
             }
         } catch {
             invoke.reject(error.localizedDescription)
@@ -96,8 +101,9 @@ final class HandwritingPlugin: Plugin {
 
     @objc public func detachInkOverlay(_ invoke: Invoke) {
         runOnMain {
-            self.overlay.detach()
-            invoke.resolve()
+            self.overlay.detach {
+                invoke.resolve()
+            }
         }
     }
 
@@ -121,7 +127,7 @@ final class HandwritingPlugin: Plugin {
         }
     }
 
-    private func emitStroke(_ payload: InkStrokeDTO, on webView: WKWebView) {
+    private func emitStroke(_ payload: InkStrokeDTO, on webView: WKWebView, done: @escaping () -> Void) {
         var body: [String: Any] = [
             "color": payload.color,
             "width": payload.width,
@@ -133,6 +139,7 @@ final class HandwritingPlugin: Plugin {
         guard let data = try? JSONSerialization.data(withJSONObject: body),
             let json = String(data: data, encoding: .utf8)
         else {
+            done()
             return
         }
         let script = """
@@ -145,7 +152,9 @@ final class HandwritingPlugin: Plugin {
           }
         })(\(json));
         """
-        webView.evaluateJavaScript(script, completionHandler: nil)
+        webView.evaluateJavaScript(script) { _, _ in
+            done()
+        }
     }
 
     private func findWebView() -> WKWebView? {

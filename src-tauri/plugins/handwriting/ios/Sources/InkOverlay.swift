@@ -57,7 +57,7 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
     private var flushing = false
     private var emittedCount = 0
 
-    var onEmit: ((InkStrokeDTO) -> Void)?
+    var onEmit: ((InkStrokeDTO, @escaping () -> Void) -> Void)?
 
     var isReady: Bool {
         canvas != nil && host != nil
@@ -85,7 +85,7 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
         applyFrame(args)
     }
 
-    func setTool(_ args: SetInkToolArgs) {
+    func setTool(_ args: SetInkToolArgs, completion: @escaping () -> Void) {
         if args.trim == "pop" {
             removeLastStroke()
         } else if args.trim == "clear" {
@@ -93,22 +93,35 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
         }
         applyTool(kind: args.kind, color: args.color, width: args.width)
         if toolKind == "off" {
-            clearDrawing()
+            flushPending { [weak self] in
+                self?.clearDrawing()
+                self?.syncDrawingEnabled()
+                completion()
+            }
+            return
         }
         syncDrawingEnabled()
+        completion()
     }
 
-    func detach() {
-        canvas?.delegate = nil
-        host?.removeFromSuperview()
-        host = nil
-        canvas = nil
-        webView = nil
-        onEmit = nil
-        toolKind = "off"
-        awaitingFlush = false
-        flushing = false
-        emittedCount = 0
+    func detach(completion: @escaping () -> Void) {
+        flushPending { [weak self] in
+            guard let self else {
+                completion()
+                return
+            }
+            self.canvas?.delegate = nil
+            self.host?.removeFromSuperview()
+            self.host = nil
+            self.canvas = nil
+            self.webView = nil
+            self.onEmit = nil
+            self.toolKind = "off"
+            self.awaitingFlush = false
+            self.flushing = false
+            self.emittedCount = 0
+            completion()
+        }
     }
 
     private func ensureCanvas(in webView: WKWebView) {
@@ -214,15 +227,29 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
     }
 
     private func emitStrokes(from drawing: PKDrawing) {
-        guard let canvas else {
-            return
+        flushPendingFrom(drawing, completion: {})
+    }
+
+    private func flushPending(completion: @escaping () -> Void) {
+        awaitingFlush = false
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let canvas = self.canvas else {
+                completion()
+                return
+            }
+            self.flushPendingFrom(canvas.drawing, completion: completion)
         }
-        let viewWidth = max(1, canvas.bounds.width)
-        let scale = pageWidth / viewWidth
+    }
+
+    private func flushPendingFrom(_ drawing: PKDrawing, completion: @escaping () -> Void) {
         let strokes = drawing.strokes
         guard strokes.count > emittedCount else {
+            completion()
             return
         }
+        let viewWidth = max(1, canvas?.bounds.width ?? 1)
+        let scale = pageWidth / viewWidth
+        let group = DispatchGroup()
         for stroke in strokes[emittedCount...] {
             var points = samplePoints(from: stroke, scale: scale)
             if points.count == 1 {
@@ -231,16 +258,21 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
             guard points.count >= 2 else {
                 continue
             }
-            onEmit?(
-                InkStrokeDTO(
-                    kind: toolKind == "marker" ? "marker" : nil,
-                    color: toolColor,
-                    width: emittedWidth(from: stroke, scale: scale),
-                    points: points
-                )
+            let dto = InkStrokeDTO(
+                kind: toolKind == "marker" ? "marker" : nil,
+                color: toolColor,
+                width: emittedWidth(from: stroke, scale: scale),
+                points: points
             )
+            if let onEmit {
+                group.enter()
+                onEmit(dto) {
+                    group.leave()
+                }
+            }
         }
         emittedCount = strokes.count
+        group.notify(queue: .main, execute: completion)
     }
 
     private func samplePoints(from stroke: PKStroke, scale: CGFloat) -> [[Double]] {

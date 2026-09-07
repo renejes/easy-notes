@@ -176,9 +176,9 @@ export async function setInkTool(tool: InkOverlayTool, trim?: 'pop' | 'clear'): 
 
 export async function detachInkOverlay(): Promise<void> {
 	await enqueue(async () => {
-		strokeHandler = null;
-		setWindowHandler(null);
 		if (!attached) {
+			strokeHandler = null;
+			setWindowHandler(null);
 			return;
 		}
 		attached = false;
@@ -187,5 +187,13 @@ export async function detachInkOverlay(): Promise<void> {
 		} catch {
 			// Overlay is already gone when leaving iOS or tearing down.
 		}
+		const view = window as InkWindow;
+		const queued = view.__easyNotesInkQueue ?? [];
+		view.__easyNotesInkQueue = [];
+		for (const payload of queued) {
+			handleStrokePayload(payload);
+		}
+		strokeHandler = null;
+		setWindowHandler(null);
 	});
 }

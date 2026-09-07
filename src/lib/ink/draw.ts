@@ -55,11 +55,10 @@ export function drawStrokes(ctx: CanvasRenderingContext2D, strokes: Stroke[], sc
 		ctx.beginPath();
 		const first = stroke.points[0];
 		ctx.moveTo(first.x * scale, first.y * scale);
+		ctx.lineWidth = strokeLineWidth(stroke, scale);
 		if (stroke.points.length === 1) {
-			ctx.lineWidth = stroke.width * scale;
 			ctx.lineTo(first.x * scale + 0.1, first.y * scale);
 		} else {
-			ctx.lineWidth = stroke.width * scale;
 			for (let index = 1; index < stroke.points.length; index += 1) {
 				const point = stroke.points[index];
 				ctx.lineTo(point.x * scale, point.y * scale);
@@ -67,6 +66,20 @@ export function drawStrokes(ctx: CanvasRenderingContext2D, strokes: Stroke[], sc
 		}
 		ctx.stroke();
 		ctx.restore();
+	}
+}
+
+function strokeLineWidth(stroke: Stroke, scale: number): number {
+	switch (stroke.kind) {
+		case 'pencil':
+			// PencilKit's pen reads thinner than a round canvas stroke of the same width.
+			return stroke.width * scale * 0.5;
+		case 'marker':
+			return stroke.width * scale;
+		default: {
+			const _exhaustive: never = stroke.kind;
+			return _exhaustive;
+		}
 	}
 }
 
@@ -86,6 +99,11 @@ export function pointerToPoint(
 /** Palm/finger is `touch`. Pencil is `pen`, Mac trackpad/mouse is `mouse`. */
 export function isInkPointer(event: PointerEvent): boolean {
 	return event.pointerType !== 'touch';
+}
+
+/** Hovering Pencil must not start an erase. */
+export function isInkContact(event: PointerEvent): boolean {
+	return isInkPointer(event) && event.buttons > 0;
 }
 
 function isIosHost(): boolean {

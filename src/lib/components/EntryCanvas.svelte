@@ -5,6 +5,7 @@
 	import {
 		drawPaper,
 		drawStrokes,
+		isInkContact,
 		isInkPointer,
 		pointerToPoint,
 		predictedPoints,
@@ -18,6 +19,7 @@
 		PAGE_WIDTH,
 		PENCIL_COLOR,
 		PENCIL_WIDTH,
+		ERASER_RADIUS,
 		appendInkPoint,
 		compactStroke,
 		eraseAlong,
@@ -74,6 +76,9 @@
 	let overlayLive = $state(false);
 	let pencilSeen = $state(false);
 	let nativePending = $state(0);
+	let eraserCursor = $state.raw<{ x: number; y: number; size: number } | null>(null);
+	let eraserArmed = false;
+	let leaving = false;
 
 	const drawing = $derived(
 		deskTool === 'pencil' || deskTool === 'marker' || deskTool === 'eraser'
@@ -219,7 +224,9 @@
 		});
 		return () => {
 			cancelled = true;
-			void persist();
+			if (!leaving) {
+				void persist();
+			}
 		};
 	});
 
@@ -304,12 +311,39 @@
 	});
 
 	$effect(() => {
+		if (deskTool !== 'eraser') {
+			eraserArmed = false;
+			return;
+		}
+		if (overlayLive) {
+			eraserArmed = false;
+			return;
+		}
+		eraserArmed = false;
+		const timer = window.setTimeout(() => {
+			eraserArmed = true;
+		}, 400);
+		return () => {
+			window.clearTimeout(timer);
+		};
+	});
+
+	$effect(() => {
 		if (!overlayLive) {
 			return;
 		}
-		const tool = overlayPaused
-			? { kind: 'off' as const, color: markerColor, width: PENCIL_WIDTH }
-			: overlayTool();
+		if (overlayPaused) {
+			untrack(() => {
+				nativePending = 0;
+				layoutPage();
+			});
+			void setInkTool({ kind: 'off', color: markerColor, width: PENCIL_WIDTH });
+			return;
+		}
+		const tool = overlayTool();
+		if (tool.kind === 'off') {
+			return;
+		}
 		void setInkTool(tool);
 	});
 
@@ -341,16 +375,69 @@
 		if (saveTimer !== undefined) {
 			window.clearTimeout(saveTimer);
 		}
+		if (leaving) {
+			return;
+		}
 		void detachInkOverlay();
 		void persist();
 	});
 
-	function closeEntry(): void {
-		appState.setOpenEntry(null);
+	async function closeEntry(): Promise<void> {
+		if (leaving) {
+			return;
+		}
+		leaving = true;
+		if (saveTimer !== undefined) {
+			window.clearTimeout(saveTimer);
+			saveTimer = undefined;
+		}
+		try {
+			await detachInkOverlay();
+			await tick();
+			await persist();
+		} finally {
+			appState.setOpenEntry(null);
+		}
 	}
 
 	function selectDeskTool(next: DeskTool): void {
 		deskTool = deskTool === next ? null : next;
+		if (deskTool !== 'eraser') {
+			eraserArmed = false;
+			hideEraserCursor();
+		}
+	}
+
+	function hideEraserCursor(): void {
+		if (eraserCursor !== null) {
+			eraserCursor = null;
+		}
+	}
+
+	function updateEraserCursor(event: PointerEvent): void {
+		if (event.pointerType === 'touch') {
+			return;
+		}
+		if (deskTool !== 'eraser' || !inkCanvas || overlayPaused) {
+			hideEraserCursor();
+			return;
+		}
+		const rect = inkCanvas.getBoundingClientRect();
+		if (
+			event.clientX < rect.left ||
+			event.clientX > rect.right ||
+			event.clientY < rect.top ||
+			event.clientY > rect.bottom
+		) {
+			hideEraserCursor();
+			return;
+		}
+		const pageWidth = entry?.page.width || PAGE_WIDTH;
+		eraserCursor = {
+			x: event.clientX,
+			y: event.clientY,
+			size: 2 * ERASER_RADIUS * (rect.width / Math.max(1, pageWidth))
+		};
 	}
 
 	function overlayTool(): InkOverlayTool {
@@ -390,6 +477,7 @@
 		}
 		markerColor = color;
 		deskTool = 'marker';
+		hideEraserCursor();
 	}
 
 	function setStrokes(next: Stroke[]): void {
@@ -426,8 +514,9 @@
 				return;
 			}
 			case 'eraser': {
+				updateEraserCursor(event);
 				event.preventDefault();
-				if (!isInkPointer(event) || activePointerId !== null) {
+				if (!eraserArmed || !isInkContact(event) || activePointerId !== null) {
 					return;
 				}
 				activePointerId = event.pointerId;
@@ -445,6 +534,9 @@
 	}
 
 	function onPointerMove(event: PointerEvent): void {
+		if (deskTool === 'eraser' && event.pointerId !== activePointerId) {
+			updateEraserCursor(event);
+		}
 		if (!inkCanvas || event.pointerId !== activePointerId) {
 			return;
 		}
@@ -453,6 +545,7 @@
 			case 'flip':
 				return;
 			case 'eraser': {
+				updateEraserCursor(event);
 				event.preventDefault();
 				if (!lastErasePoint) {
 					return;
@@ -595,9 +688,11 @@
 	}
 </script>
 
+<svelte:window onpointermove={deskTool === 'eraser' ? updateEraserCursor : undefined} />
+
 <section class="reader">
 	<header>
-		<button type="button" onclick={closeEntry}>{t('back')}</button>
+		<button type="button" onclick={() => void closeEntry()}>{t('back')}</button>
 		<p>{appState.openNotebook?.title ?? t('untitled')} · {entry?.title ?? fileName}</p>
 		<div class="tools">
 			<button type="button" class:active={deskTool === 'pencil'} onclick={() => selectDeskTool('pencil')}>
@@ -645,19 +740,34 @@
 			<canvas bind:this={paperCanvas}></canvas>
 			<canvas
 				bind:this={inkCanvas}
-				class="ink"
-				class:passthrough={!drawing || nativeOwnsInk}
+				class={['ink', (!drawing || nativeOwnsInk) && 'passthrough', deskTool === 'eraser' && 'erasing']}
 				{@attach drawing && !nativeOwnsInk && blockTouchDefault}
 				onpointerdown={onPointerDown}
 				onpointermove={onPointerMove}
 				onpointerup={commitStroke}
 				onpointercancel={commitStroke}
+				onpointerleave={() => {
+					if (activePointerId === null) {
+						hideEraserCursor();
+					}
+				}}
 				oncontextmenu={(event) => event.preventDefault()}
 			></canvas>
 			<canvas bind:this={liveCanvas} class="ink live"></canvas>
 		</div>
 	</div>
 </section>
+
+{#if eraserCursor}
+	<div
+		class="eraser-cursor"
+		style:left="{eraserCursor.x}px"
+		style:top="{eraserCursor.y}px"
+		style:width="{eraserCursor.size}px"
+		style:height="{eraserCursor.size}px"
+		aria-hidden="true"
+	></div>
+{/if}
 
 {#if asTextOpen}
 	<div class="scrim">
@@ -769,6 +879,22 @@
 
 	.ink.live {
 		pointer-events: none;
+	}
+
+	.ink.erasing {
+		cursor: none;
+	}
+
+	.eraser-cursor {
+		position: fixed;
+		z-index: 20;
+		pointer-events: none;
+		box-sizing: border-box;
+		border: 2px solid rgb(17 17 17 / 0.72);
+		border-radius: 50%;
+		background: rgb(255 255 255 / 0.22);
+		box-shadow: 0 0 0 1px rgb(255 255 255 / 0.85);
+		transform: translate(-50%, -50%);
 	}
 
 	.error {

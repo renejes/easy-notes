@@ -2,7 +2,7 @@
 
 **Aufmachen. Schreiben. Weitergeben.**
 
-Analoge Notizbücher auf dem iPad: ein Heft pro Thema, Stift auf der Seite, Dateien in Dropbox. Handschrift wird auf Wunsch zu Markdown — und landet dort, wo Easy Writing sie erwartet.
+Analoge Notizbücher auf dem iPad und dem Mac: ein Heft pro Thema, Stift auf der Seite, Dateien in Dropbox. Handschrift wird auf Wunsch zu Markdown — und landet dort, wo Easy Writing sie erwartet.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-111111?style=flat-square)](LICENSE)
 [![Tauri](https://img.shields.io/badge/Tauri-2-111111?style=flat-square)](https://v2.tauri.app)

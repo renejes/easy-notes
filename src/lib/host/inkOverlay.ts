@@ -21,6 +21,7 @@ export type InkOverlayTool = {
 
 type InkWindow = Window & {
 	__easyNotesOnInkStroke?: (payload: unknown) => void;
+	__easyNotesOnInkBaked?: (count: number) => void;
 	__easyNotesInkQueue?: unknown[];
 };
 
@@ -29,6 +30,7 @@ const ATTACH_TIMEOUT_MS = 2000;
 
 let attached = false;
 let strokeHandler: ((stroke: Stroke) => void) | null = null;
+let bakedHandler: ((count: number) => void) | null = null;
 let queue: Promise<void> = Promise.resolve();
 
 function enqueue(task: () => Promise<void>): Promise<void> {
@@ -66,9 +68,17 @@ function setWindowHandler(handler: ((payload: unknown) => void) | null): void {
 	const view = window as InkWindow;
 	if (!handler) {
 		delete view.__easyNotesOnInkStroke;
+		delete view.__easyNotesOnInkBaked;
+		bakedHandler = null;
 		return;
 	}
 	view.__easyNotesOnInkStroke = handler;
+	view.__easyNotesOnInkBaked = (count: number) => {
+		const amount = typeof count === 'number' ? count : Number(count);
+		if (Number.isFinite(amount) && amount > 0) {
+			bakedHandler?.(amount);
+		}
+	};
 	const queued = view.__easyNotesInkQueue ?? [];
 	view.__easyNotesInkQueue = [];
 	for (const payload of queued) {
@@ -130,10 +140,12 @@ export function overlayFrameFor(
 export async function attachInkOverlay(
 	frame: InkOverlayFrame,
 	tool: InkOverlayTool,
-	onStroke: (stroke: Stroke) => void
+	onStroke: (stroke: Stroke) => void,
+	onBaked: (count: number) => void
 ): Promise<void> {
 	await enqueue(async () => {
 		strokeHandler = onStroke;
+		bakedHandler = onBaked;
 		setWindowHandler(handleStrokePayload);
 		try {
 			await withTimeout(
@@ -147,10 +159,11 @@ export async function attachInkOverlay(
 			);
 			attached = true;
 		} catch (error) {
-			attached = false;
-			strokeHandler = null;
-			setWindowHandler(null);
-			throw error;
+		attached = false;
+		strokeHandler = null;
+		bakedHandler = null;
+		setWindowHandler(null);
+		throw error;
 		}
 	});
 }
@@ -178,6 +191,7 @@ export async function detachInkOverlay(): Promise<void> {
 	await enqueue(async () => {
 		if (!attached) {
 			strokeHandler = null;
+			bakedHandler = null;
 			setWindowHandler(null);
 			return;
 		}
@@ -194,6 +208,7 @@ export async function detachInkOverlay(): Promise<void> {
 			handleStrokePayload(payload);
 		}
 		strokeHandler = null;
+		bakedHandler = null;
 		setWindowHandler(null);
 	});
 }

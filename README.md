@@ -53,7 +53,7 @@ Lesen/                          Notizen/                       Schreiben/
 
 **2. Weitergeben.** Auf dem Startschirm von Easy Reading: **Beilagen nach Easy Notes**. Du wählst ein Heft (oder den Notizen-Ordner; dann entsteht das Heft „Aus dem Lesen“). Die Beilagen werden als `.note.json` kopiert, Strokes unverändert, Herkunft im `source`-Feld. Schon importierte Blätter werden übersprungen.
 
-**3. Schreiben.** In Easy Notes ist das die Seite im Heft. Stift, drei Marker, Radierer — dieselben wie in Reading. Die Seite wächst nach unten.
+**3. Schreiben.** In Easy Notes ist das die Seite im Heft. Stift, drei Marker, Radierer. Die Seite wächst nach unten, und unter dem Text bleibt Platz zum Weiterblättern.
 
 **4. Maschinentext.** **Als Text** erkennt die Handschrift lokal (auf dem Gerät, offline). Du prüfst den Text, dann liegt `….md` neben der JSON. Easy Writing öffnet diesen Ordner; `.md` reicht, ein Extra-Importer braucht es nicht.
 
@@ -71,8 +71,8 @@ Paplo und Endless Paper können Stift. Sie können nicht den Weg Reading → Not
 
 - **Regal** — einmal den Dropbox-Ordner binden, Notizbücher als Liste
 - **Heft** — Index der Einträge, neues Blatt aufschlagen
-- **Seite** — weißes Blatt, vertikal endlos. Apple Pencil schreibt, Finger blättert
-- **Stift, Marker, Radierer** — Bleistift `#111`, gelb / pink / orange, Radierer
+- **Seite** — weißes Blatt, das nach unten mitwächst. Apple Pencil schreibt, Finger blättert, auch ins leere Papier
+- **Stift, Marker, Radierer** — Bleistift `#111`, gelb / pink / orange, Radierer, optionale Linien
 - **Umbenennen und Löschen** — Titel und Dateiname/Ordner auf der Platte, damit Mac und iPad nicht auseinanderlaufen
 - **Als Text** — Erkennung auf dem Gerät, Prüffenster, `.md` mit Frontmatter
 - **Lock** — `easy-notes.lock.json` im Heft, weich, wie Easy Writing
@@ -126,7 +126,7 @@ npm run ios:device                     # iPad per USB, gebündeltes Frontend
 npm run macos:release                  # signiertes, notariertes DMG (braucht Apple-ID-Env)
 ```
 
-Tauri-Imports liegen nur in `$lib/host/`. Der Stift ist Web-Canvas plus JSON, nicht PencilKit als Speicher. OCR: Vision auf dem Mac; auf dem iPad `PKStrokeRecognizer` (iPadOS 27) mit Vision-Fallback.
+Tauri-Imports liegen nur in `$lib/host/`. Gespeichert wird Strich-JSON, nicht ein PencilKit-Dokument. Auf dem iPad zeichnet der Stift über PencilKit auf dem sichtbaren Ausschnitt und landet beim Absetzen in dieser JSON. Die Handschrift-Erkennung läuft mit Apple Vision, auf dem Mac und auf dem iPad, lokal.
 
 Technischer Stand: [`documentation/01-project-status.md`](documentation/01-project-status.md).
 
@@ -134,7 +134,7 @@ Technischer Stand: [`documentation/01-project-status.md`](documentation/01-proje
 
 Schreibbereit auf **macOS** und **iPad**: Regal, Heft, Eintrag, Dropbox, Umbenennen, Löschen, Export als Text.
 
-**Absichtlich nicht in v0.1:** Tags, Sticker, PDF-Annotation, Suche in Handschrift, Dark Mode, Accounts, PencilKit als Dateiformat, Live-Merge wenn zwei Stifte denselben Eintrag schreiben (letzte Dropbox-Version gewinnt).
+**Absichtlich nicht in v0.1:** Tags, Sticker, PDF-Annotation, Suche in Handschrift, Dark Mode, Accounts, PencilKit als Dateiformat, Zusammenführen wenn zwei Geräte denselben Eintrag schreiben (letzte Dropbox-Version gewinnt).
 
 ## Mitmachen
 

@@ -4,11 +4,13 @@
 	import { appState } from '$lib/appState.svelte';
 	import {
 		drawPaper,
+		drawPaperStrip,
 		drawStrokes,
 		isInkContact,
 		isInkPointer,
 		pointerToPoint,
 		predictedPoints,
+		resizeCanvas,
 		strokePointers
 	} from '$lib/ink/draw';
 	import {
@@ -20,9 +22,10 @@
 		PENCIL_COLOR,
 		PENCIL_WIDTH,
 		ERASER_RADIUS,
+		ERASER_STEP,
 		appendInkPoint,
 		compactStroke,
-		eraseAlong,
+		erasePolyline,
 		newStroke,
 		strokeBoundsHeight,
 		type InkPoint,
@@ -39,7 +42,8 @@
 	import { setPaperLines } from '$lib/host/settings';
 	import { recognizeHandwriting } from '$lib/host/ocr';
 	import { formatHostError } from '$lib/host/error';
-	import { readEntry, writeEntry, writeEntryMarkdown } from '$lib/host/shelf';
+	import { readEntry, writeEntryBody, writeEntryMarkdown } from '$lib/host/shelf';
+	import { serializeEntryOffThread } from '$lib/note/serializeAsync';
 	import { t, type MessageKey } from '$lib/i18n';
 	import { appDialog } from '$lib/ui/dialog.svelte';
 	import type { NoteEntry } from '$lib/note/entry';
@@ -60,7 +64,7 @@
 	let pageEl: HTMLDivElement | undefined = $state();
 	let deskTool = $state<DeskTool | null>(null);
 	let markerColor = $state<(typeof MARKER_COLORS)[number]>(MARKER_COLORS[0]);
-	let entry = $state<NoteEntry | null>(null);
+	let entry = $state.raw<NoteEntry | null>(null);
 	let scale = $state(1);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
@@ -68,17 +72,28 @@
 	let lastErasePoint: InkPoint | null = null;
 	let activePointerId: number | null = null;
 	let saveTimer: number | undefined;
+	let saveQueue: Promise<void> = Promise.resolve();
+	let saveDirty = false;
 	let asTextOpen = $state(false);
 	let asTextBusy = $state(false);
 	let asTextBody = $state('');
 	let asTextNotice = $state<string | null>(null);
 	let extraHeight = $state(0);
+	let tailViewports = $state(1);
+	let viewportUnits = $state(PAGE_MIN_HEIGHT);
 	let overlayLive = $state(false);
 	let pencilSeen = $state(false);
-	let nativePending = $state(0);
-	let eraserCursor = $state.raw<{ x: number; y: number; size: number } | null>(null);
+	let nativePending = 0;
 	let eraserArmed = false;
 	let leaving = false;
+	let pageReady = false;
+	let paintedLines: boolean | null = null;
+	let tailExtendLock = false;
+	let eraseTrail: InkPoint[] = [];
+	let cursorMark: { x: number; y: number; radius: number } | null = null;
+
+	const SAVE_DELAY_MS = 1500;
+	const TAIL_MAX = 8;
 
 	const drawing = $derived(
 		deskTool === 'pencil' || deskTool === 'marker' || deskTool === 'eraser'
@@ -90,15 +105,45 @@
 	const nativeOwnsInk = $derived(overlayLive && !overlayPaused);
 	const strokes = $derived(entry?.strokes ?? []);
 	const canEditInk = $derived(strokes.length > 0);
-	const pageHeight = $derived(
+	const contentHeight = $derived(
 		Math.max(extraHeight, entry ? strokeBoundsHeight(entry.strokes) : PAGE_MIN_HEIGHT)
 	);
+	const pageHeight = $derived(contentHeight + viewportUnits * tailViewports);
 
-	async function persist(): Promise<void> {
-		if (!entry) {
+	async function persist(finalWrite = false): Promise<void> {
+		if (!entry || (leaving && !finalWrite)) {
 			return;
 		}
-		await writeEntry(notebookId, fileName, entry);
+		saveDirty = true;
+		const run = saveQueue.then(async () => {
+			while (saveDirty) {
+				if (leaving && !finalWrite) {
+					return;
+				}
+				saveDirty = false;
+				const snapshot = entry;
+				if (!snapshot) {
+					return;
+				}
+				const body = await serializeEntryOffThread(snapshot);
+				if (leaving && !finalWrite) {
+					return;
+				}
+				if (entry !== snapshot) {
+					saveDirty = true;
+					continue;
+				}
+				await writeEntryBody(notebookId, fileName, body);
+				if (entry !== snapshot) {
+					saveDirty = true;
+				}
+			}
+		});
+		saveQueue = run.then(
+			() => undefined,
+			() => undefined
+		);
+		await run;
 	}
 
 	function scheduleSave(): void {
@@ -106,9 +151,16 @@
 			window.clearTimeout(saveTimer);
 		}
 		saveTimer = window.setTimeout(() => {
+			saveTimer = undefined;
+			if (activePointerId !== null || eraseTrail.length > 0) {
+				scheduleSave();
+				return;
+			}
 			void persist();
-		}, 400);
+		}, SAVE_DELAY_MS);
 	}
+
+	type SurfaceMode = 'same' | 'extended' | 'reset' | 'skipped';
 
 	function sizeSurfaces(width: number, height: number): void {
 		if (!paperCanvas || !inkCanvas || !liveCanvas) {
@@ -133,12 +185,20 @@
 		return liveCanvas.getContext('2d', { desynchronized: true, alpha: true });
 	}
 
+	function inkContext(): CanvasRenderingContext2D | null {
+		if (!inkCanvas) {
+			return null;
+		}
+		return inkCanvas.getContext('2d');
+	}
+
 	function clearLive(): void {
 		const ctx = liveContext();
 		if (!ctx || !liveCanvas) {
 			return;
 		}
 		ctx.clearRect(0, 0, liveCanvas.width, liveCanvas.height);
+		cursorMark = null;
 	}
 
 	function paintLive(stroke: Stroke, extra: InkPoint[] = []): void {
@@ -147,48 +207,146 @@
 			return;
 		}
 		ctx.clearRect(0, 0, liveCanvas.width, liveCanvas.height);
+		cursorMark = null;
 		const preview = extra.length === 0 ? stroke : { ...stroke, points: [...stroke.points, ...extra] };
 		drawStrokes(ctx, [preview], scale);
 	}
 
-	function redrawInk(): void {
-		if (!inkCanvas) {
-			return;
-		}
-		const ctx = inkCanvas.getContext('2d');
+	function paintStroke(stroke: Stroke): void {
+		const ctx = inkContext();
 		if (!ctx) {
 			return;
 		}
+		drawStrokes(ctx, [stroke], scale);
+	}
+
+	function redrawInk(): void {
+		const ctx = inkContext();
+		if (!ctx || !inkCanvas) {
+			return;
+		}
 		ctx.clearRect(0, 0, inkCanvas.width, inkCanvas.height);
+		const all = entry?.strokes ?? [];
 		const skip = overlayLive && !overlayPaused ? nativePending : 0;
-		const shown = skip > 0 ? strokes.slice(0, Math.max(0, strokes.length - skip)) : strokes;
+		const shown = skip > 0 ? all.slice(0, Math.max(0, all.length - skip)) : all;
 		drawStrokes(ctx, shown, scale);
 	}
 
-	function layoutPage(): void {
-		if (!paperCanvas || !pageEl || !entry) {
+	function bakeNativeInk(count: number): void {
+		if (!entry || count <= 0 || nativePending <= 0) {
 			return;
+		}
+		const bakeCount = Math.min(count, nativePending);
+		const start = Math.max(0, entry.strokes.length - nativePending);
+		nativePending -= bakeCount;
+		for (let index = start; index < start + bakeCount; index += 1) {
+			const stroke = entry.strokes[index];
+			if (stroke) {
+				paintStroke(stroke);
+			}
+		}
+	}
+
+	function syncViewportUnits(): void {
+		if (!pageEl || scale <= 0) {
+			return;
+		}
+		const next = pageEl.clientHeight / scale;
+		if (!Number.isFinite(next) || next < 64 || Math.abs(next - viewportUnits) < 4) {
+			return;
+		}
+		viewportUnits = next;
+	}
+
+	function layoutPage(): SurfaceMode {
+		if (!paperCanvas || !inkCanvas || !liveCanvas || !pageEl || !entry) {
+			return 'skipped';
 		}
 		const maxWidth = Math.max(320, pageEl.clientWidth - 2);
 		scale = Math.min(2, maxWidth / Math.max(1, entry.page.width || PAGE_WIDTH));
+		syncViewportUnits();
 		const pixelWidth = Math.max(320, Math.round((entry.page.width || PAGE_WIDTH) * scale));
 		const pixelHeight = Math.max(1, Math.round(pageHeight * scale));
+		const lines = appState.paperLines;
+		const sameSize = pageReady && paperCanvas.width === pixelWidth && paperCanvas.height === pixelHeight;
+		if (sameSize && paintedLines === lines) {
+			releaseTailLock();
+			return 'same';
+		}
+		if (sameSize) {
+			const ctx = paperCanvas.getContext('2d');
+			if (ctx) {
+				drawPaper(ctx, pixelWidth, pixelHeight, scale, lines);
+			}
+			paintedLines = lines;
+			releaseTailLock();
+			return 'same';
+		}
+		const growing =
+			pageReady &&
+			paintedLines === lines &&
+			paperCanvas.width === pixelWidth &&
+			pixelHeight > paperCanvas.height;
+		if (growing) {
+			const fromY = paperCanvas.height;
+			resizeCanvas(paperCanvas, pixelWidth, pixelHeight);
+			const ctx = paperCanvas.getContext('2d');
+			if (ctx) {
+				drawPaperStrip(ctx, pixelWidth, fromY, pixelHeight, scale, lines);
+			}
+			resizeCanvas(inkCanvas, pixelWidth, pixelHeight);
+			resizeCanvas(liveCanvas, pixelWidth, pixelHeight);
+			paintedLines = lines;
+			releaseTailLock();
+			return 'extended';
+		}
 		sizeSurfaces(pixelWidth, pixelHeight);
 		redrawInk();
+		cursorMark = null;
+		paintedLines = lines;
+		pageReady = true;
+		releaseTailLock();
+		return 'reset';
+	}
+
+	function releaseTailLock(): void {
+		if (!tailExtendLock) {
+			return;
+		}
+		requestAnimationFrame(() => {
+			tailExtendLock = false;
+		});
 	}
 
 	function growIfNeeded(point: InkPoint): void {
-		const needed = Math.max(PAGE_MIN_HEIGHT, point.y + PAGE_GROW_PAD);
-		if (needed <= extraHeight) {
+		const needed = point.y + PAGE_GROW_PAD;
+		if (needed <= pageHeight) {
 			return;
 		}
-		extraHeight = needed;
+		extraHeight = Math.max(extraHeight, needed);
 		layoutPage();
+	}
+
+	function ensureTail(): void {
+		if (tailExtendLock || !pageEl || tailViewports >= TAIL_MAX) {
+			return;
+		}
+		const view = pageEl.clientHeight;
+		if (view <= 0 || pageEl.scrollHeight <= view + 1) {
+			return;
+		}
+		const remain = pageEl.scrollHeight - pageEl.scrollTop - view;
+		if (remain < view * 0.85) {
+			tailExtendLock = true;
+			tailViewports += 1;
+		}
 	}
 
 	function blockTouchDefault(canvas: HTMLCanvasElement): () => void {
 		const block = (event: Event) => {
-			event.preventDefault();
+			if (activePointerId !== null) {
+				event.preventDefault();
+			}
 		};
 		return on(canvas, 'touchmove', block, { capture: true, passive: false });
 	}
@@ -203,6 +361,10 @@
 			}
 			entry = loaded;
 			extraHeight = 0;
+			tailViewports = 1;
+			pageReady = false;
+			paintedLines = null;
+			nativePending = 0;
 			layoutPage();
 		} catch (caught) {
 			if (!cancelled()) {
@@ -232,18 +394,30 @@
 
 	$effect(() => {
 		void pageEl;
-		void entry;
 		void loading;
 		void appState.paperLines;
-		if (!loading && entry) {
-			untrack(() => layoutPage());
+		void pageHeight;
+		if (loading) {
+			return;
 		}
+		untrack(() => {
+			if (entry) {
+				layoutPage();
+			}
+		});
 	});
 
 	$effect(() => {
 		const onResize = () => layoutPage();
 		window.addEventListener('resize', onResize);
 		return () => window.removeEventListener('resize', onResize);
+	});
+
+	$effect(() => {
+		if (!pageEl) {
+			return;
+		}
+		return on(pageEl, 'scroll', () => ensureTail(), { passive: true });
 	});
 
 	$effect(() => {
@@ -263,7 +437,7 @@
 	$effect(() => {
 		if (!wantsNativeInk || loading || !inkCanvas || !pageEl) {
 			untrack(() => {
-				nativePending = 0;
+				bakeNativeInk(nativePending);
 				overlayLive = false;
 				layoutPage();
 			});
@@ -280,7 +454,7 @@
 				if (cancelled) {
 					return false;
 				}
-				await attachInkOverlay(overlayFrameFor(canvas, clip, width), tool, addNativeStroke);
+				await attachInkOverlay(overlayFrameFor(canvas, clip, width), tool, addNativeStroke, bakeNativeInk);
 				return true;
 			})
 			.then((attachedOk) => {
@@ -288,7 +462,6 @@
 					return;
 				}
 				untrack(() => {
-					nativePending = 0;
 					overlayLive = true;
 				});
 			})
@@ -302,7 +475,7 @@
 		return () => {
 			cancelled = true;
 			untrack(() => {
-				nativePending = 0;
+				bakeNativeInk(nativePending);
 				overlayLive = false;
 				layoutPage();
 			});
@@ -334,7 +507,7 @@
 		}
 		if (overlayPaused) {
 			untrack(() => {
-				nativePending = 0;
+				bakeNativeInk(nativePending);
 				layoutPage();
 			});
 			void setInkTool({ kind: 'off', color: markerColor, width: PENCIL_WIDTH });
@@ -355,19 +528,33 @@
 		const canvas = inkCanvas;
 		const clip = pageEl;
 		const width = untrack(() => entry?.page.width || PAGE_WIDTH);
+		let frame = 0;
 		const sync = (): void => {
 			void updateInkOverlay(overlayFrameFor(canvas, clip, width));
 		};
-		const stopScroll = on(clip, 'scroll', sync, { passive: true });
-		window.addEventListener('resize', sync);
-		window.visualViewport?.addEventListener('resize', sync);
-		window.visualViewport?.addEventListener('scroll', sync);
+		const schedule = (): void => {
+			ensureTail();
+			if (frame !== 0) {
+				return;
+			}
+			frame = requestAnimationFrame(() => {
+				frame = 0;
+				sync();
+			});
+		};
+		const stopScroll = on(clip, 'scroll', schedule, { passive: true });
+		window.addEventListener('resize', schedule);
+		window.visualViewport?.addEventListener('resize', schedule);
+		window.visualViewport?.addEventListener('scroll', schedule);
 		sync();
 		return () => {
 			stopScroll();
-			window.removeEventListener('resize', sync);
-			window.visualViewport?.removeEventListener('resize', sync);
-			window.visualViewport?.removeEventListener('scroll', sync);
+			if (frame !== 0) {
+				cancelAnimationFrame(frame);
+			}
+			window.removeEventListener('resize', schedule);
+			window.visualViewport?.removeEventListener('resize', schedule);
+			window.visualViewport?.removeEventListener('scroll', schedule);
 		};
 	});
 
@@ -394,7 +581,7 @@
 		try {
 			await detachInkOverlay();
 			await tick();
-			await persist();
+			await persist(true);
 		} finally {
 			appState.setOpenEntry(null);
 		}
@@ -408,36 +595,90 @@
 		}
 	}
 
-	function hideEraserCursor(): void {
-		if (eraserCursor !== null) {
-			eraserCursor = null;
+	function overCanvas(event: PointerEvent): boolean {
+		if (!inkCanvas) {
+			return false;
 		}
+		const rect = inkCanvas.getBoundingClientRect();
+		return (
+			event.clientX >= rect.left &&
+			event.clientX <= rect.right &&
+			event.clientY >= rect.top &&
+			event.clientY <= rect.bottom
+		);
+	}
+
+	function hideEraserCursor(): void {
+		const ctx = liveContext();
+		if (!ctx || !cursorMark) {
+			cursorMark = null;
+			return;
+		}
+		const pad = 3;
+		const size = (cursorMark.radius + pad) * 2;
+		ctx.clearRect(
+			cursorMark.x - cursorMark.radius - pad,
+			cursorMark.y - cursorMark.radius - pad,
+			size,
+			size
+		);
+		cursorMark = null;
+	}
+
+	function paintEraserCursor(point: InkPoint | null): void {
+		hideEraserCursor();
+		if (!point) {
+			return;
+		}
+		const ctx = liveContext();
+		if (!ctx) {
+			return;
+		}
+		const x = point.x * scale;
+		const y = point.y * scale;
+		const radius = ERASER_RADIUS * scale;
+		cursorMark = { x, y, radius };
+		ctx.beginPath();
+		ctx.arc(x, y, radius, 0, Math.PI * 2);
+		ctx.lineWidth = 2;
+		ctx.strokeStyle = 'rgba(17, 17, 17, 0.72)';
+		ctx.stroke();
+		ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+		ctx.fill();
 	}
 
 	function updateEraserCursor(event: PointerEvent): void {
-		if (event.pointerType === 'touch') {
-			return;
-		}
-		if (deskTool !== 'eraser' || !inkCanvas || overlayPaused) {
+		if (event.pointerType === 'touch' || deskTool !== 'eraser' || !inkCanvas || overlayPaused) {
 			hideEraserCursor();
 			return;
 		}
-		const rect = inkCanvas.getBoundingClientRect();
-		if (
-			event.clientX < rect.left ||
-			event.clientX > rect.right ||
-			event.clientY < rect.top ||
-			event.clientY > rect.bottom
-		) {
+		if (!overCanvas(event)) {
 			hideEraserCursor();
 			return;
 		}
-		const pageWidth = entry?.page.width || PAGE_WIDTH;
-		eraserCursor = {
-			x: event.clientX,
-			y: event.clientY,
-			size: 2 * ERASER_RADIUS * (rect.width / Math.max(1, pageWidth))
-		};
+		paintEraserCursor(pointerToPoint(event, inkCanvas, scale));
+	}
+
+	function stampEraser(from: InkPoint, to: InkPoint): void {
+		const ctx = inkContext();
+		if (!ctx) {
+			return;
+		}
+		const radius = ERASER_RADIUS * scale;
+		const dx = (to.x - from.x) * scale;
+		const dy = (to.y - from.y) * scale;
+		const distance = Math.hypot(dx, dy);
+		const steps = Math.max(1, Math.ceil(distance / Math.max(1, ERASER_STEP * scale)));
+		ctx.save();
+		ctx.globalCompositeOperation = 'destination-out';
+		ctx.fillStyle = '#000000';
+		for (let step = 0; step <= steps; step += 1) {
+			const t = step / steps;
+			ctx.beginPath();
+			ctx.arc(from.x * scale + dx * t, from.y * scale + dy * t, radius, 0, Math.PI * 2);
+			ctx.fill();
+		}
+		ctx.restore();
 	}
 
 	function overlayTool(): InkOverlayTool {
@@ -461,12 +702,11 @@
 		if (!entry) {
 			return;
 		}
-		nativePending += 1;
-		const last = stroke.points[stroke.points.length - 1];
-		if (last) {
-			growIfNeeded(last);
-		}
 		entry = { ...entry, strokes: [...entry.strokes, stroke] };
+		const mode = layoutPage();
+		if (mode !== 'reset') {
+			paintStroke(stroke);
+		}
 		scheduleSave();
 	}
 
@@ -486,7 +726,10 @@
 		}
 		entry = { ...entry, strokes: next };
 		scheduleSave();
-		layoutPage();
+		const mode = layoutPage();
+		if (mode !== 'reset') {
+			redrawInk();
+		}
 	}
 
 	function onPointerDown(event: PointerEvent): void {
@@ -515,15 +758,16 @@
 			}
 			case 'eraser': {
 				updateEraserCursor(event);
-				event.preventDefault();
 				if (!eraserArmed || !isInkContact(event) || activePointerId !== null) {
 					return;
 				}
+				event.preventDefault();
 				activePointerId = event.pointerId;
 				inkCanvas.setPointerCapture(event.pointerId);
 				const point = pointerToPoint(event, inkCanvas, scale);
 				lastErasePoint = point;
-				setStrokes(eraseAlong(strokes, point, point));
+				eraseTrail = [point];
+				stampEraser(point, point);
 				return;
 			}
 			default: {
@@ -551,14 +795,13 @@
 					return;
 				}
 				let from = lastErasePoint;
-				let next = strokes;
 				for (const pointer of strokePointers(event)) {
 					const point = pointerToPoint(pointer, inkCanvas, scale);
-					next = eraseAlong(next, from, point);
+					stampEraser(from, point);
+					eraseTrail.push(point);
 					from = point;
 				}
 				lastErasePoint = from;
-				setStrokes(next);
 				return;
 			}
 			case 'pencil':
@@ -595,18 +838,42 @@
 		}
 		activePointerId = null;
 		lastErasePoint = null;
+		if (eraseTrail.length > 0 && entry) {
+			const trail = eraseTrail;
+			eraseTrail = [];
+			setStrokes(erasePolyline(entry.strokes, trail));
+		} else {
+			eraseTrail = [];
+		}
 		if (!currentStroke || !entry) {
-			clearLive();
+			if (deskTool === 'eraser') {
+				updateEraserCursor(event);
+			} else {
+				clearLive();
+			}
 			return;
 		}
 		const compacted = compactStroke(currentStroke);
 		currentStroke = null;
 		if (compacted) {
 			entry = { ...entry, strokes: [...entry.strokes, compacted] };
+			let maxY = 0;
+			for (const point of compacted.points) {
+				if (point.y > maxY) {
+					maxY = point.y;
+				}
+			}
+			const needed = maxY + PAGE_GROW_PAD;
+			if (needed > pageHeight) {
+				extraHeight = Math.max(extraHeight, needed);
+			}
+			const mode = layoutPage();
+			if (mode !== 'reset') {
+				paintStroke(compacted);
+			}
 			scheduleSave();
 		}
 		clearLive();
-		layoutPage();
 	}
 
 	function undo(): void {
@@ -621,7 +888,7 @@
 	}
 
 	function commitLiveInk(): void {
-		nativePending = 0;
+		bakeNativeInk(nativePending);
 		layoutPage();
 	}
 
@@ -687,8 +954,6 @@
 		}
 	}
 </script>
-
-<svelte:window onpointermove={deskTool === 'eraser' ? updateEraserCursor : undefined} />
 
 <section class="reader">
 	<header>
@@ -757,17 +1022,6 @@
 		</div>
 	</div>
 </section>
-
-{#if eraserCursor}
-	<div
-		class="eraser-cursor"
-		style:left="{eraserCursor.x}px"
-		style:top="{eraserCursor.y}px"
-		style:width="{eraserCursor.size}px"
-		style:height="{eraserCursor.size}px"
-		aria-hidden="true"
-	></div>
-{/if}
 
 {#if asTextOpen}
 	<div class="scrim">
@@ -850,6 +1104,8 @@
 		position: relative;
 		height: 100%;
 		overflow: auto;
+		overscroll-behavior: contain;
+		overflow-anchor: none;
 		border: 1px solid var(--line);
 		background: var(--bg);
 		display: grid;
@@ -857,6 +1113,7 @@
 		user-select: none;
 		-webkit-user-select: none;
 		-webkit-touch-callout: none;
+		touch-action: pan-y;
 	}
 
 	canvas {
@@ -870,7 +1127,7 @@
 		left: 50%;
 		top: 0;
 		transform: translateX(-50%);
-		touch-action: none;
+		touch-action: pan-y;
 	}
 
 	.ink.passthrough {
@@ -883,18 +1140,6 @@
 
 	.ink.erasing {
 		cursor: none;
-	}
-
-	.eraser-cursor {
-		position: fixed;
-		z-index: 20;
-		pointer-events: none;
-		box-sizing: border-box;
-		border: 2px solid rgb(17 17 17 / 0.72);
-		border-radius: 50%;
-		background: rgb(255 255 255 / 0.22);
-		box-shadow: 0 0 0 1px rgb(255 255 255 / 0.85);
-		transform: translate(-50%, -50%);
 	}
 
 	.error {

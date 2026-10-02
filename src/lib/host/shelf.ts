@@ -307,8 +307,12 @@ export async function readEntry(notebookId: string, fileName: string): Promise<N
 }
 
 export async function writeEntry(notebookId: string, fileName: string, entry: NoteEntry): Promise<void> {
+	await writeEntryBody(notebookId, fileName, serializeEntry(entry));
+}
+
+export async function writeEntryBody(notebookId: string, fileName: string, body: string): Promise<void> {
 	const path = await resolveUnder(requireRoot(), `${notebookId}/${fileName}`);
-	await writeText(path, serializeEntry(entry));
+	await writeText(path, body);
 }
 
 export async function writeEntryMarkdown(

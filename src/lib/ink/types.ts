@@ -17,6 +17,8 @@ export const PENCIL_COLOR = '#111111';
 export const PENCIL_WIDTH = 1.4;
 export const MARKER_WIDTH = 16;
 export const ERASER_RADIUS = 12;
+/** Distance between eraser samples, in page units. Circles of ERASER_RADIUS overlap. */
+export const ERASER_STEP = ERASER_RADIUS * 0.45;
 export const PAGE_WIDTH = 768;
 export const PAGE_MIN_HEIGHT = 1024;
 export const PAGE_GROW_PAD = 240;
@@ -193,7 +195,147 @@ export function parseStrokes(raw: unknown): Stroke[] {
 	return raw.map((stroke) => parseStroke(stroke)).filter((stroke): stroke is Stroke => stroke !== null);
 }
 
-function eraseStroke(stroke: Stroke, eraser: InkPoint, radiusSq: number): Stroke[] {
+type StrokeBounds = {
+	minX: number;
+	minY: number;
+	maxX: number;
+	maxY: number;
+};
+
+function boundsOf(stroke: Stroke): StrokeBounds | null {
+	let minX = Infinity;
+	let minY = Infinity;
+	let maxX = -Infinity;
+	let maxY = -Infinity;
+	for (const point of stroke.points) {
+		if (point.x < minX) {
+			minX = point.x;
+		}
+		if (point.y < minY) {
+			minY = point.y;
+		}
+		if (point.x > maxX) {
+			maxX = point.x;
+		}
+		if (point.y > maxY) {
+			maxY = point.y;
+		}
+	}
+	if (!Number.isFinite(minX)) {
+		return null;
+	}
+	return { minX, minY, maxX, maxY };
+}
+
+function eraserSamples(path: InkPoint[]): InkPoint[] {
+	const first = path[0];
+	if (!first) {
+		return [];
+	}
+	const samples: InkPoint[] = [first];
+	let previous = first;
+	for (let index = 1; index < path.length; index += 1) {
+		const next = path[index];
+		const dx = next.x - previous.x;
+		const dy = next.y - previous.y;
+		const distance = Math.hypot(dx, dy);
+		const steps = Math.max(1, Math.ceil(distance / ERASER_STEP));
+		for (let step = 1; step <= steps; step += 1) {
+			const t = step / steps;
+			samples.push({
+				x: previous.x + dx * t,
+				y: previous.y + dy * t,
+				p: 0.5
+			});
+		}
+		previous = next;
+	}
+	return samples;
+}
+
+function sampleHits(
+	point: InkPoint,
+	samples: InkPoint[],
+	grid: Map<string, number[]>,
+	cell: number,
+	radiusSq: number
+): boolean {
+	const cx = Math.floor(point.x / cell);
+	const cy = Math.floor(point.y / cell);
+	for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+		for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+			const bucket = grid.get(`${cx + offsetX}:${cy + offsetY}`);
+			if (!bucket) {
+				continue;
+			}
+			for (const index of bucket) {
+				const sample = samples[index];
+				const dx = point.x - sample.x;
+				const dy = point.y - sample.y;
+				if (dx * dx + dy * dy < radiusSq) {
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
+
+/** Removes ink along a whole gesture. Strokes far from the path are left untouched. */
+export function erasePolyline(strokes: Stroke[], path: InkPoint[]): Stroke[] {
+	if (path.length === 0 || strokes.length === 0) {
+		return strokes;
+	}
+	const samples = eraserSamples(path);
+	if (samples.length === 0) {
+		return strokes;
+	}
+	const radius = ERASER_RADIUS;
+	const radiusSq = radius * radius;
+	const cell = radius;
+	const grid = new Map<string, number[]>();
+	let minX = Infinity;
+	let minY = Infinity;
+	let maxX = -Infinity;
+	let maxY = -Infinity;
+	for (let index = 0; index < samples.length; index += 1) {
+		const sample = samples[index];
+		if (sample.x < minX) {
+			minX = sample.x;
+		}
+		if (sample.y < minY) {
+			minY = sample.y;
+		}
+		if (sample.x > maxX) {
+			maxX = sample.x;
+		}
+		if (sample.y > maxY) {
+			maxY = sample.y;
+		}
+		const key = `${Math.floor(sample.x / cell)}:${Math.floor(sample.y / cell)}`;
+		const bucket = grid.get(key);
+		if (bucket) {
+			bucket.push(index);
+		} else {
+			grid.set(key, [index]);
+		}
+	}
+	return strokes.flatMap((stroke) => {
+		const bounds = boundsOf(stroke);
+		if (
+			!bounds ||
+			bounds.maxX < minX - radius ||
+			bounds.minX > maxX + radius ||
+			bounds.maxY < minY - radius ||
+			bounds.minY > maxY + radius
+		) {
+			return [stroke];
+		}
+		return eraseStrokeWhere(stroke, (point) => sampleHits(point, samples, grid, cell, radiusSq));
+	});
+}
+
+function eraseStrokeWhere(stroke: Stroke, hit: (point: InkPoint) => boolean): Stroke[] {
 	const kept: Stroke[] = [];
 	let chunk: InkPoint[] = [];
 	const flush = (): void => {
@@ -203,9 +345,7 @@ function eraseStroke(stroke: Stroke, eraser: InkPoint, radiusSq: number): Stroke
 		chunk = [];
 	};
 	for (const point of stroke.points) {
-		const dx = point.x - eraser.x;
-		const dy = point.y - eraser.y;
-		if (dx * dx + dy * dy < radiusSq) {
+		if (hit(point)) {
 			flush();
 		} else {
 			chunk.push(point);
@@ -213,21 +353,6 @@ function eraseStroke(stroke: Stroke, eraser: InkPoint, radiusSq: number): Stroke
 	}
 	flush();
 	return kept;
-}
-
-export function eraseAlong(strokes: Stroke[], from: InkPoint, to: InkPoint): Stroke[] {
-	const radiusSq = ERASER_RADIUS * ERASER_RADIUS;
-	const dx = to.x - from.x;
-	const dy = to.y - from.y;
-	const dist = Math.hypot(dx, dy);
-	const steps = Math.max(1, Math.ceil(dist / (ERASER_RADIUS * 0.45)));
-	let current = strokes;
-	for (let step = 0; step <= steps; step += 1) {
-		const t = step / steps;
-		const eraser: InkPoint = { x: from.x + dx * t, y: from.y + dy * t, p: 0.5 };
-		current = current.flatMap((stroke) => eraseStroke(stroke, eraser, radiusSq));
-	}
-	return current;
 }
 
 export function strokeBoundsHeight(strokes: Stroke[]): number {

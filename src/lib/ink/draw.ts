@@ -27,6 +27,78 @@ export function drawPaper(
 	ctx.restore();
 }
 
+/** Fills a newly added strip. Existing pixels above `fromY` stay as they are. */
+export function drawPaperStrip(
+	ctx: CanvasRenderingContext2D,
+	width: number,
+	fromY: number,
+	toY: number,
+	scale: number,
+	lined: boolean
+): void {
+	if (toY <= fromY) {
+		return;
+	}
+	ctx.fillStyle = '#ffffff';
+	ctx.fillRect(0, fromY, width, toY - fromY);
+	if (!lined) {
+		return;
+	}
+	ctx.save();
+	ctx.strokeStyle = '#d4d4d4';
+	ctx.lineWidth = 1;
+	ctx.beginPath();
+	const gap = PAGE_LINE_GAP * scale;
+	const top = PAGE_LINE_TOP * scale;
+	for (let y = top; y < toY; y += gap) {
+		if (y < fromY) {
+			continue;
+		}
+		const row = Math.round(y) + 0.5;
+		ctx.moveTo(0, row);
+		ctx.lineTo(width, row);
+	}
+	ctx.stroke();
+	ctx.restore();
+}
+
+export type CanvasResize = 'same' | 'extended' | 'reset';
+
+/**
+ * Grows a canvas downward without throwing away pixels already drawn.
+ * A width change, or a shorter canvas, starts from a blank bitmap.
+ */
+export function resizeCanvas(
+	canvas: HTMLCanvasElement,
+	width: number,
+	height: number
+): CanvasResize {
+	if (canvas.width === width && canvas.height === height && width > 0 && height > 0) {
+		return 'same';
+	}
+	const extend =
+		canvas.width === width && height > canvas.height && canvas.width > 0 && canvas.height > 0;
+	if (!extend) {
+		canvas.width = width;
+		canvas.height = height;
+		return 'reset';
+	}
+	const previous = document.createElement('canvas');
+	previous.width = canvas.width;
+	previous.height = canvas.height;
+	const saved = previous.getContext('2d');
+	if (saved) {
+		saved.drawImage(canvas, 0, 0);
+	}
+	canvas.width = width;
+	canvas.height = height;
+	const ctx = canvas.getContext('2d');
+	if (ctx && saved) {
+		ctx.drawImage(previous, 0, 0);
+	}
+	return 'extended';
+}
+
 export function drawStrokes(ctx: CanvasRenderingContext2D, strokes: Stroke[], scale: number): void {
 	ctx.lineJoin = 'round';
 	for (const stroke of strokes) {

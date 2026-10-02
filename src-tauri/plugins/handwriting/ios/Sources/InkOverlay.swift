@@ -55,7 +55,13 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
 
     private var awaitingFlush = false
     private var flushing = false
+    private var strokeActive = false
     private var emittedCount = 0
+    private var inkScale: CGFloat = 1
+    private var inkRatio: CGFloat = 1
+    private var inkOriginX: CGFloat = 0
+    private var inkOriginY: CGFloat = 0
+    private var pendingFrame: OverlayFrameArgs?
 
     var onEmit: ((InkStrokeDTO, @escaping () -> Void) -> Void)?
 
@@ -82,6 +88,11 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
     }
 
     func updateFrame(_ args: OverlayFrameArgs) {
+        if strokeActive || flushing {
+            pendingFrame = args
+            return
+        }
+        pendingFrame = nil
         applyFrame(args)
     }
 
@@ -94,9 +105,15 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
         applyTool(kind: args.kind, color: args.color, width: args.width)
         if toolKind == "off" {
             flushPending { [weak self] in
-                self?.clearDrawing()
-                self?.syncDrawingEnabled()
-                completion()
+                guard let self else {
+                    completion()
+                    return
+                }
+                self.settleEmittedInk(force: true) {
+                    self.clearDrawing()
+                    self.syncDrawingEnabled()
+                    completion()
+                }
             }
             return
         }
@@ -110,17 +127,20 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
                 completion()
                 return
             }
-            self.canvas?.delegate = nil
-            self.host?.removeFromSuperview()
-            self.host = nil
-            self.canvas = nil
-            self.webView = nil
-            self.onEmit = nil
-            self.toolKind = "off"
-            self.awaitingFlush = false
-            self.flushing = false
-            self.emittedCount = 0
-            completion()
+            self.settleEmittedInk(force: true) {
+                self.canvas?.delegate = nil
+                self.host?.removeFromSuperview()
+                self.host = nil
+                self.canvas = nil
+                self.webView = nil
+                self.onEmit = nil
+                self.toolKind = "off"
+                self.awaitingFlush = false
+                self.flushing = false
+                self.strokeActive = false
+                self.emittedCount = 0
+                completion()
+            }
         }
     }
 
@@ -187,8 +207,26 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
             to: parent
         )
         host.frame = clip.integral
-        canvas.frame = host.convert(paper, from: parent).integral
+        let paperInHost = host.convert(paper, from: parent)
+        let visible = paperInHost.intersection(CGRect(origin: .zero, size: host.bounds.size))
+        inkRatio = paperInHost.width / pageWidth
+        inkScale = pageWidth / max(paperInHost.width, 1)
+        if visible.isNull || visible.width < 1 || visible.height < 1 {
+            canvas.frame = .zero
+            return
+        }
+        canvas.frame = visible
+        inkOriginX = visible.origin.x - paperInHost.origin.x
+        inkOriginY = visible.origin.y - paperInHost.origin.y
         applyInkAppearance()
+    }
+
+    private func applyPendingFrame() {
+        guard let pending = pendingFrame else {
+            return
+        }
+        pendingFrame = nil
+        applyFrame(pending)
     }
 
     private func applyTool(kind: String, color: String?, width: Double?) {
@@ -206,8 +244,7 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
         guard let canvas else {
             return
         }
-        let viewWidth = max(1, canvas.bounds.width)
-        let ratio = viewWidth / pageWidth
+        let ratio = max(inkRatio, 0.01)
         let color = Self.color(from: toolColor)
         switch toolKind {
         case "marker":
@@ -226,9 +263,7 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
         canvas?.isUserInteractionEnabled = enabled
     }
 
-    private func emitStrokes(from drawing: PKDrawing) {
-        flushPendingFrom(drawing, completion: {})
-    }
+    private var settling = false
 
     private func flushPending(completion: @escaping () -> Void) {
         awaitingFlush = false
@@ -247,11 +282,9 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
             completion()
             return
         }
-        let viewWidth = max(1, canvas?.bounds.width ?? 1)
-        let scale = pageWidth / viewWidth
         let group = DispatchGroup()
         for stroke in strokes[emittedCount...] {
-            var points = samplePoints(from: stroke, scale: scale)
+            var points = samplePoints(from: stroke)
             if points.count == 1 {
                 points.append(points[0])
             }
@@ -261,7 +294,7 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
             let dto = InkStrokeDTO(
                 kind: toolKind == "marker" ? "marker" : nil,
                 color: toolColor,
-                width: emittedWidth(from: stroke, scale: scale),
+                width: emittedWidth(from: stroke),
                 points: points
             )
             if let onEmit {
@@ -275,23 +308,82 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
         group.notify(queue: .main, execute: completion)
     }
 
-    private func samplePoints(from stroke: PKStroke, scale: CGFloat) -> [[Double]] {
+    /// Asks the page to paint finished strokes, then removes those strokes from PencilKit.
+    private func settleEmittedInk(force: Bool, completion: @escaping () -> Void) {
+        guard !settling else {
+            completion()
+            return
+        }
+        guard force || !strokeActive else {
+            completion()
+            return
+        }
+        let count = min(emittedCount, canvas?.drawing.strokes.count ?? 0)
+        guard count > 0 else {
+            completion()
+            return
+        }
+        settling = true
+        notifyBaked(count) { [weak self] in
+            guard let self else {
+                completion()
+                return
+            }
+            let dropped = (!self.strokeActive || force) ? self.dropPrefix(count) : 0
+            self.settling = false
+            if dropped > 0, self.emittedCount > 0, force || !self.strokeActive {
+                self.settleEmittedInk(force: force, completion: completion)
+                return
+            }
+            completion()
+        }
+    }
+
+    private func dropPrefix(_ count: Int) -> Int {
+        guard count > 0, let canvas else {
+            return 0
+        }
+        var strokes = canvas.drawing.strokes
+        let drop = min(count, strokes.count, emittedCount)
+        guard drop > 0 else {
+            return 0
+        }
+        strokes.removeFirst(drop)
+        flushing = true
+        canvas.drawing = PKDrawing(strokes: strokes)
+        flushing = false
+        emittedCount = max(0, emittedCount - drop)
+        return drop
+    }
+
+    private func notifyBaked(_ count: Int, completion: @escaping () -> Void) {
+        guard count > 0, let webView else {
+            completion()
+            return
+        }
+        let script = "window.__easyNotesOnInkBaked && window.__easyNotesOnInkBaked(\(count));"
+        webView.evaluateJavaScript(script) { _, _ in
+            completion()
+        }
+    }
+
+    private func samplePoints(from stroke: PKStroke) -> [[Double]] {
         var points: [[Double]] = []
         for point in stroke.path {
-            points.append(packedPoint(point.location, scale: scale))
+            points.append(packedPoint(point.location))
         }
         return points
     }
 
-    private func packedPoint(_ location: CGPoint, scale: CGFloat) -> [Double] {
+    private func packedPoint(_ location: CGPoint) -> [Double] {
         return [
-            Double(location.x * scale),
-            Double(location.y * scale),
+            Double((location.x + inkOriginX) * inkScale),
+            Double((location.y + inkOriginY) * inkScale),
             0.5
         ]
     }
 
-    private func emittedWidth(from stroke: PKStroke, scale: CGFloat) -> Double {
+    private func emittedWidth(from stroke: PKStroke) -> Double {
         var total: CGFloat = 0
         var count = 0
         for point in stroke.path {
@@ -302,7 +394,7 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
             }
         }
         if count > 0 {
-            return Double((total / CGFloat(count)) * scale)
+            return Double((total / CGFloat(count)) * inkScale)
         }
         return Double(toolWidth)
     }
@@ -312,11 +404,15 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
             return
         }
         var strokes = canvas.drawing.strokes
+        let removingEmitted = strokes.count <= emittedCount
         strokes.removeLast()
         flushing = true
         canvas.drawing = PKDrawing(strokes: strokes)
         flushing = false
-        emittedCount = canvas.drawing.strokes.count
+        if removingEmitted {
+            emittedCount = max(0, emittedCount - 1)
+        }
+        emittedCount = min(emittedCount, strokes.count)
     }
 
     private func clearDrawing() {
@@ -335,15 +431,25 @@ final class InkOverlayController: NSObject, PKCanvasViewDelegate {
         }
         awaitingFlush = false
         flushing = true
-        emitStrokes(from: canvasView.drawing)
-        flushing = false
+        flushPendingFrom(canvasView.drawing) { [weak self] in
+            guard let self else {
+                return
+            }
+            if !self.strokeActive {
+                _ = self.dropPrefix(self.emittedCount)
+            }
+            self.applyPendingFrame()
+            self.flushing = false
+        }
     }
 
     func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
+        strokeActive = true
         awaitingFlush = false
     }
 
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
+        strokeActive = false
         awaitingFlush = true
         DispatchQueue.main.async { [weak self] in
             self?.flushCompletedStrokes(from: canvasView)
